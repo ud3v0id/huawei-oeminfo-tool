@@ -1381,19 +1381,13 @@ class OemUnpacker:
             self._info("Step 3: Extracting and classifying data...")
         self._debug(f"Beginning payload extraction for {len(self.processing_queue)} blocks")
 
-        if not self.dry_run:  # Only create/clear directory if not in dry_run mode.
-            if os.path.exists(self.output_dir):
-                self._info(f"Clearing existing output directory '{self.output_dir}'...")
-                try:
-                    shutil.rmtree(self.output_dir)  # Recursively delete the old output directory.
-                except OSError as e:
-                    self._error(f"Failed to remove directory '{self.output_dir}': {e}. Please check permissions.")
-                    return # Exit if directory cannot be removed.
+        if not self.dry_run:
             try:
-                os.makedirs(self.output_dir)  # Create the new output directory.
+                os.makedirs(self.output_dir, exist_ok=True) # Create directory, don't fail if it exists
+                self._info(f"Ensuring output directory '{self.output_dir}' exists.")
             except OSError as e:
-                self._error(f"Failed to create output directory '{self.output_dir}': {e}. Please check permissions.")
-                return # Exit if directory cannot be created.
+                self._error(f"Failed to create or ensure output directory '{self.output_dir}': {e}. Please check permissions.")
+                return
 
 
         for block in self.processing_queue:
@@ -2161,24 +2155,21 @@ def run_unpack_mode(args: argparse.Namespace) -> None:
         logger.error(f"Input file '{file_to_process}' for unpacking not found.")
         exit(1)
 
-    # Validation for unpack mode: output directory must not already exist unless force is used.
+    # Validation for unpack mode: check output_target existence and type
     if os.path.exists(output_target):
-        if not args.force:
-            logger.error(f"Output directory '{output_target}' already exists. Use --force to remove it before unpacking.")
+        if os.path.isfile(output_target):
+            logger.error(f"Output path '{output_target}' is an existing file. Please remove it manually or specify a directory.")
             exit(1)
-        # Force removal of the existing path.
-        if os.path.isdir(output_target):
-            try:
-                shutil.rmtree(output_target)
-            except OSError as e:
-                logger.error(f"Failed to remove existing output directory '{output_target}': {e}. Please check permissions.")
+        elif os.path.isdir(output_target):
+            if not args.force:
+                logger.error(f"Output directory '{output_target}' already exists. Use --force to unpack into it.")
                 exit(1)
+            else:
+                logger.info(f"Output directory '{output_target}' already exists. --force provided, unpacking into it.")
         else:
-            try:
-                os.remove(output_target)
-            except OSError as e:
-                logger.error(f"Failed to remove existing output file '{output_target}': {e}. Please check permissions.")
-                exit(1)
+            # Handle other types like symlinks to files, block devices etc. as an error.
+            logger.error(f"Output path '{output_target}' exists but is not a directory. Please ensure it's a writable directory or does not exist.")
+            exit(1)
 
     unpacker: OemUnpacker = OemUnpacker(file_to_process, output_target, debug=args.debug, logger=logger)
     try:
