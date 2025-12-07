@@ -12,7 +12,6 @@ Author: ud3v0id
 import struct
 import os
 import json
-import shutil
 import argparse
 import mmap
 import collections
@@ -290,28 +289,41 @@ class OemUnpacker:
         """
         Determines whether a block uses the standard 0x1000-aligned layout or is a reused block.
         """
-        pad_byte: int = header_info.get('header_padding_byte', 0xFF) & 0xFF
-        header_info['header_padding_byte'] = pad_byte
+        # 1. header_padding_byte default value: Check last 4 bytes of first 32 bytes.
+        #    If uniform, use it. Else fallback to STANDARD(0xFF)/REUSED(0x00).
+        # This is handled partially in parse_block_header (setting initial value or None)
+        # and finalized here.
+        current_pad: Optional[int] = header_info.get('header_padding_byte')
+        
+        # Set default state (REUSED)
         header_info['header_size'] = 64
         header_info['classification'] = "REUSED"
         header_info['is_reused'] = True
         header_info['is_standard'] = False
+        # If pad is unknown, default reused pad is 0x00
+        header_info['header_padding_byte'] = current_pad if current_pad is not None else 0x00
 
         offset = header_info['offset']
         if offset % 0x1000 != 0:
             return
 
-        if not self._region_matches_padding(offset + 32, 32, pad_byte):
+        # Try to validate STANDARD layout.
+        # If we have a specific pad byte, we must match it.
+        # If we don't (None), we try 0xFF (standard default).
+        test_pad = current_pad if current_pad is not None else 0xFF
+
+        if not self._region_matches_padding(offset + 32, 32, test_pad):
             return
-        if not self._region_matches_padding(offset + 64, 4, pad_byte):
+        if not self._region_matches_padding(offset + 64, 4, test_pad):
             return
-        if not self._region_matches_padding(offset + 64, 448, pad_byte):
+        if not self._region_matches_padding(offset + 64, 448, test_pad):
             return
 
         header_info['classification'] = "STANDARD"
         header_info['is_reused'] = False
         header_info['is_standard'] = True
         header_info['header_size'] = 512
+        header_info['header_padding_byte'] = test_pad
     
     def _collect_uniform_chunks(self, start: int, length: int, chunk_size: int, context: str) -> Optional[List[int]]:
         """
@@ -427,8 +439,9 @@ class OemUnpacker:
 
     def _record_block_tail_padding(self, block_info: Dict) -> None:
         tail_start, tail_len, _ = self._compute_tail_region(block_info)
-        classification: Optional[str] = block_info.get('classification')
-        default_pad: int = 0xFF if classification == "STANDARD" else 0x00
+        # block_padding_byte default uses header_padding_byte.
+        default_pad: int = block_info.get('header_padding_byte', 0x00)
+        
         pad_byte: int = default_pad
         if tail_len > 0 and self.mm:
             read_end: int = min(tail_start + tail_len, self._mm_len)
@@ -739,8 +752,8 @@ class OemUnpacker:
             sub: int
             dlen: int
             age: int
-            padding_field: int
-            magic, version, mid, sub, dlen, age, padding_field = BLOCK_HEADER_STRUCT.unpack(data)
+            # padding_field is unused here as we inspect the raw bytes directly later.
+            magic, version, mid, sub, dlen, age, _ = BLOCK_HEADER_STRUCT.unpack(data)
             
             # Quick check if the magic number matches 'OEM_INFO'.
             if magic != b'OEM_INFO':
@@ -751,13 +764,17 @@ class OemUnpacker:
             else:
                 magic_str = "OEM_INFO"
 
-            pad_byte: int = padding_field & 0xFF
+            # header_padding_byte default: Compare last 4 bytes of the 32-byte header.
+            # If uniform, use it. Else fallback (handled in _infer_block_layout).
+            padding_field_bytes = data[28:32]
+            header_padding_byte: Optional[int] = None
+            if all(b == padding_field_bytes[0] for b in padding_field_bytes):
+                header_padding_byte = padding_field_bytes[0]
+
             header_size: int = 64
             is_reused_flag: bool = True
-            default_padding: int = DEFAULT_PADDING_BYTE
 
             # Determine the padding byte used between the OEM header structure and payload.
-            header_padding_byte: int = pad_byte
             tail_len: int = header_size - 32
             if tail_len > 0 and self.mm and offset + header_size <= self._mm_len:
                 header_tail: memoryview = memoryview(self.mm)[offset + 32 : offset + header_size]
@@ -766,11 +783,11 @@ class OemUnpacker:
                     if all(b == first_byte for b in header_tail):
                         header_padding_byte = first_byte
                     else:
-                        header_padding_byte = default_padding
                         self._warn(
                             f"Header padding for ID {mid} Sub {sub} at offset 0x{offset:X} "
-                            f"is not uniform. Defaulting to 0x{default_padding:02X}."
+                            f"is not uniform. Falling back to derived default."
                         )
+                        # If tail is mixed, we keep header_padding_byte as determined by the 4-byte check (or None).
 
             header_info: Dict = {
                 "offset": offset,
