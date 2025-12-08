@@ -1020,12 +1020,34 @@ class OemUnpacker:
         # Ensure self.headers is sorted by offset for consistent processing.
         all_headers_sorted: List[Dict] = sorted(self.headers, key=lambda x: x['offset'])
 
+        initial_filtered_headers: List[Dict] = []
+        last_block_physical_end: int = -1 # Tracks the physical end offset of the last successfully processed block.
+
+        # --- GHOST BLOCK FILTERING LOGIC ---
+        for current_block in all_headers_sorted:
+            # Calculate the end of the current block based on its header size and payload length.
+            # This represents the actual physical space occupied by the block's header and payload.
+            current_block_physical_end = current_block['offset'] + current_block['header_size'] + current_block['len']
+            
+            if current_block['offset'] < last_block_physical_end:
+                # This block starts before the previous one ended, meaning it's inside its payload/tail.
+                self._warn(
+                    f"Identified potential ghost block ID {current_block['id']} Sub {current_block['sub_id']} "
+                    f"at 0x{current_block['offset']:X} which is inside the physical bounds of a preceding block. "
+                    "This block will be ignored to prevent structural conflicts and data ambiguity."
+                )
+            else:
+                initial_filtered_headers.append(current_block)
+                # Update the end of the last block for the next iteration's comparison.
+                last_block_physical_end = current_block_physical_end
+        # --- END GHOST BLOCK FILTERING LOGIC ---
+        
         # Conflict Resolution: Check for Standard blocks overlapping with subsequent blocks.
         # If a Standard block's required tail alignment (0x1000) encroaches on the next block,
-        # downgrade it to REUSED.
-        for i in range(len(all_headers_sorted) - 1):
-            curr_blk = all_headers_sorted[i]
-            next_blk = all_headers_sorted[i+1]
+        # downgrade it to STANDARD_COMPACT.
+        for i in range(len(initial_filtered_headers) - 1):
+            curr_blk = initial_filtered_headers[i]
+            next_blk = initial_filtered_headers[i+1]
 
             if curr_blk.get('classification') == 'STANDARD':
                 # Calculate the theoretical end of this block if it remains STANDARD.
@@ -1044,25 +1066,18 @@ class OemUnpacker:
                     )
                     # Resolve conflict by relaxing alignment requirement
                     curr_blk['classification'] = "STANDARD_COMPACT"
-                    # Do NOT change header_size; it must remain 512 to correctly locate payload.
         
-        processed_headers: List[Dict] = []
-        for h in all_headers_sorted:
+        # Group headers by (ID, SubID) to determine active blocks based on Age.
+        block_groups: Dict[Tuple[int, int], List[Dict]] = collections.defaultdict(list)
+        for h in initial_filtered_headers: # Iterate over initial_filtered_headers
             # Determine the region (A or B) the block belongs to based on its offset.
             if 0 <= h['offset'] < REGION_SIZE:
                 h['region'] = 'A'
             elif REGION_SIZE <= h['offset'] < (2 * REGION_SIZE):
                 h['region'] = 'B'
             else:
-                h['region'] = 'Unknown'  # This should not happen if the file structure conforms to A/B regions.
+                h['region'] = 'Unknown'
 
-            # header_size and is_reused are already determined in parse_block_header; no further handling needed here.
-            
-            processed_headers.append(h)
-            
-        # Group headers by (ID, SubID) to determine active blocks based on Age.
-        block_groups: Dict[Tuple[int, int], List[Dict]] = collections.defaultdict(list)
-        for h in processed_headers:
             # Only consider valid regions (A/B) for active/inactive determination.
             if h['region'] in ['A', 'B']:
                 block_groups[(h['id'], h['sub_id'])].append(h)
@@ -1101,7 +1116,7 @@ class OemUnpacker:
 
         # Add any headers not part of a recognized A/B pair (e.g., 'Unknown' region).
         # These will be treated as independent blocks.
-        for h in processed_headers:
+        for h in initial_filtered_headers: # Iterate over initial_filtered_headers
             if (h['id'], h['sub_id']) not in processed_ids_sub_ids:
                 # If a block was not processed as part of an A/B pair, it's considered active.
                 h['is_active'] = True
