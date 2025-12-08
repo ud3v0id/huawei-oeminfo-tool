@@ -6,8 +6,13 @@ This tool allows developers and ROM modders to inspect the proprietary `oeminfo`
 
 ## 🚀 Features
 
+*   **Enhanced Robustness & Error Handling**:
+    *   **Ghost Block Filtering**: Automatically identifies and ignores "ghost blocks" (misidentified headers within another block's payload), preventing structural conflicts and ambiguous data.
+    *   **Conflict Resolution**: Intelligently resolves overlaps between Standard blocks and subsequent blocks by reclassifying the former as `STANDARD_COMPACT` (preserving 512-byte headers while relaxing strict 4KB tail alignment).
+    *   **Flexible Layout Handling**: Correctly parses and includes legitimate data blocks located beyond the conventional `TOTAL_REGION_SIZE` (64MB) limit of OEMINFO images.
 *   **Comprehensive Parsing**: Automatically detects and classifies data blocks:
     *   **Standard Blocks**: 4KB aligned blocks.
+    *   **Standard Compact Blocks**: 512-byte header blocks that are not 4KB aligned or resolve alignment conflicts.
     *   **Reused Blocks**: Efficient storage for repeated data.
     *   **Images**: Auto-detection of GZIP and BMP boot logos/animations.
     *   **TLV Data**: Parses Type-Length-Value structures automatically.
@@ -18,9 +23,10 @@ This tool allows developers and ROM modders to inspect the proprietary `oeminfo`
 *   **Secure & Robust**:
     *   **Path Traversal Protection**: Prevents malicious filenames from writing outside the target directory.
     *   **Atomic Writes**: Uses temporary files during repacking to ensure the output file is never corrupted if the process is interrupted.
+    *   **Binary Fidelity**: Preserves non-ASCII characters in image version strings, preventing data loss.
 *   **User Friendly**: 
     *   Detailed ASCII previews for text blocks.
-    *   Structured `manifest.json` for easy modification and rebuilding.
+    *   **Improved `manifest.json`**: `offset` values are now represented as clear hexadecimal strings (e.g., "0x1000"), significantly enhancing readability and ease of editing for advanced users. Image version strings are also stored as Hex for full transparency.
     *   Verbose debug logging.
 
 ## 📋 Requirements
@@ -67,7 +73,7 @@ Rebuild an `oeminfo.img` file from an extracted directory. You can modify the fi
 python oeminfo_tool.py repack -i output_folder -o new_oeminfo.img
 ```
 
-**Note:** The tool automatically handles padding calculation and block alignment (0x1000 for Standard, 0x80 for Reused).
+**Note:** The tool automatically handles padding calculation and block alignment based on block types (`STANDARD`, `STANDARD_COMPACT`, `REUSED`).
 
 **Options:**
 *   `-f`, `--force`: Force overwrite if the output file already exists.
@@ -75,7 +81,7 @@ python oeminfo_tool.py repack -i output_folder -o new_oeminfo.img
 ## 🛡️ Safety & Architecture
 
 This tool works by mapping the original file structure into a `manifest.json`.
-*   **Unpacking**: It safely extracts data, detecting file types (GZIP/BMP/Text) and adding appropriate extensions.
+*   **Unpacking**: It safely extracts data, intelligently resolving structural conflicts and detecting file types (GZIP/BMP/Text/TLV) and adding appropriate extensions.
 *   **Repacking**: It reads the `manifest.json`, reconstructs the specific OEM headers, and stitches the file back together.
 
 **Atomic Write Mechanism**:
