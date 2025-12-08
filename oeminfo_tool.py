@@ -16,7 +16,7 @@ import argparse
 import mmap
 import collections
 import math
-from typing import List, Dict, Optional, Tuple, Union, BinaryIO
+from typing import List, Dict, Optional, Tuple, Union, BinaryIO, Any
 
 # --- Configuration Constants ---
 # Default input OEMINFO image file path.
@@ -841,7 +841,7 @@ class OemUnpacker:
         return {
             "data_offset": start_offset,
             "rand_adjust": rand_adjust,
-            "ver": ver_bytes.decode('ascii', errors='ignore').rstrip('\x00'),
+            "ver": ver_bytes, # Store as bytes
             "magic": magic
         }
 
@@ -1509,7 +1509,7 @@ class OemUnpacker:
         layout: str = block.get("classification", "REUSED").upper()
         serialized: Dict = {
             "type": block["type"],
-            "offset": block["offset"],
+            "offset": f"0x{block['offset']:X}", # Convert to Hex string
             "version": block["version"],
             "id": block["id"],
             "sub_id": block["sub_id"],
@@ -1521,8 +1521,13 @@ class OemUnpacker:
 
         if block["type"].startswith("IMAGE"):
             custom_meta: Dict = block.get("custom_meta", {})
+            # 'ver' is stored as bytes internally. Convert to HEX string for JSON serialization
+            # to ensure unambiguous storage and editability.
+            ver_val = custom_meta.get("ver", b"")
+            ver_str = f"0x{ver_val.hex().upper()}" if isinstance(ver_val, bytes) else str(ver_val)
+            
             serialized["custom_meta"] = {
-                "ver": custom_meta.get("ver", ""),
+                "ver": ver_str,
                 "rand_adjust": custom_meta.get("rand_adjust", 0)
             }
 
@@ -1534,7 +1539,7 @@ class OemUnpacker:
         """
         serialized: Dict = {
             "type": "PADDING",
-            "offset": entry["offset"]
+            "offset": f"0x{entry['offset']:X}" # Convert to Hex string
         }
         if "profile" in entry:
             serialized["profile"] = entry["profile"]
@@ -1621,11 +1626,25 @@ class OemPacker:
     def _info(self, message: str) -> None:
         self.logger.info(message)
 
-    def _warn(self, message: str) -> None:
-        self.logger.warn(message)
-
     def _error(self, message: str) -> None:
         self.logger.error(message)
+
+    def _convert_manifest_hex_to_int(self, data: Union[Dict, List, Any]) -> Union[Dict, List, Any]:
+        """
+        Recursively converts hexadecimal string values (e.g., "0xABCD") back to integers
+        within the loaded manifest structure.
+        """
+        if isinstance(data, Dict):
+            return {k: self._convert_manifest_hex_to_int(v) for k, v in data.items()}
+        if isinstance(data, List):
+            return [self._convert_manifest_hex_to_int(elem) for elem in data]
+        if isinstance(data, str) and data.startswith("0x"):
+            try:
+                return int(data, 16)
+            except ValueError:
+                # If it's not a valid hex, keep as string.
+                return data
+        return data
 
     def _build_filename_base(self, block_info: Dict) -> str:
         """
@@ -1696,7 +1715,8 @@ class OemPacker:
             raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
         try:
             with open(manifest_path, "r", encoding='utf-8') as f:
-                self.manifest = json.load(f)
+                raw_manifest = json.load(f)
+            self.manifest = self._convert_manifest_hex_to_int(raw_manifest) # Convert hex strings to int
             self._debug(f"Manifest loaded from {manifest_path}")
             self._prepare_layout_entries()
         except json.JSONDecodeError as e:
@@ -1901,8 +1921,17 @@ class OemPacker:
             custom_meta: Dict = dict(block_info.get("custom_meta", {}) or {})
             if not custom_meta:
                 raise ValueError(f"Image block ID {block_info['id']} Sub {block_info['sub_id']} missing custom_meta.")
-            ver_str: str = custom_meta.get("ver", "")
-            ver_bytes: bytes = ver_str.encode('ascii', errors='ignore').ljust(12, b'\x00')
+            
+            # JSON loads 'ver' as a HEX string. Decode back to bytes.
+            ver_hex: str = custom_meta.get("ver", "")
+            if ver_hex.startswith("0x"):
+                ver_hex = ver_hex[2:] # Strip "0x" prefix for bytes.fromhex
+            try:
+                ver_bytes: bytes = bytes.fromhex(ver_hex).ljust(12, b'\x00')
+            except ValueError:
+                # Fallback if user provided non-hex string manually or invalid hex
+                self._warn(f"Invalid HEX string for Image Version ('{ver_hex}'). Falling back to ASCII (ignoring errors).")
+                ver_bytes = ver_hex.encode('ascii', errors='ignore').ljust(12, b'\x00')
 
             if block_type == "IMAGE_GZIP":
                 gz_rel: str = f"{base_name}.gz"
