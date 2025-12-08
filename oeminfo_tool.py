@@ -298,8 +298,6 @@ class OemUnpacker:
         # Set default state (REUSED)
         header_info['header_size'] = 64
         header_info['classification'] = "REUSED"
-        header_info['is_reused'] = True
-        header_info['is_standard'] = False
         # If pad is unknown, default reused pad is 0x00
         header_info['header_padding_byte'] = current_pad if current_pad is not None else 0x00
 
@@ -320,8 +318,6 @@ class OemUnpacker:
             return
 
         header_info['classification'] = "STANDARD"
-        header_info['is_reused'] = False
-        header_info['is_standard'] = True
         header_info['header_size'] = 512
         header_info['header_padding_byte'] = test_pad
     
@@ -457,7 +453,6 @@ class OemUnpacker:
                             f"Defaulting to 0x{default_pad:02X}."
                         )
         block_info['block_padding_byte'] = pad_byte
-        block_info['tail_padding_len'] = tail_len
 
     def _build_padding_profile(self, start: int, length: int, context: str) -> Optional[str]:
         """
@@ -654,8 +649,6 @@ class OemUnpacker:
         descriptor_text: str = ""
         if 'tlv_subtype_description' in block_info:
             descriptor_text = f" ([TLV]{block_info['tlv_subtype_description']})"
-        elif 'subtype' in block_info:
-            descriptor_text = f" ({block_info['subtype']})"
 
         header_body: str = f"{header_prefix} {base_header}" if header_prefix else base_header
         header_body += descriptor_text
@@ -772,7 +765,6 @@ class OemUnpacker:
                 header_padding_byte = padding_field_bytes[0]
 
             header_size: int = 64
-            is_reused_flag: bool = True
 
             # Determine the padding byte used between the OEM header structure and payload.
             tail_len: int = header_size - 32
@@ -791,7 +783,6 @@ class OemUnpacker:
 
             header_info: Dict = {
                 "offset": offset,
-                "magic": magic_str,
                 "version": version,
                 "id": mid,
                 "sub_id": sub,
@@ -799,7 +790,6 @@ class OemUnpacker:
                 "age": age,
                 "type": "UNKNOWN",  # Initial type, will be overwritten by content type.
                 "header_size": header_size,
-                "is_reused": is_reused_flag,
                 "header_padding_byte": header_padding_byte
             }
             self._infer_block_layout(header_info)
@@ -976,7 +966,7 @@ class OemUnpacker:
 
     def _check_ab_region_bounds(self, block_info: Dict) -> Optional[str]:
         """
-        Marks whether a block resides completely inside the valid AB region.
+        Checks whether a block resides completely inside the valid AB region.
 
         Args:
             block_info (Dict): Metadata for the block to evaluate.
@@ -990,7 +980,6 @@ class OemUnpacker:
         block_end: int = block_start + header_len + block_info['len']
 
         outside: bool = block_start < 0 or block_end > TOTAL_REGION_SIZE
-        block_info['outside_ab_region'] = outside
         if outside:
             return (f"Block ID {block_info['id']} Sub {block_info['sub_id']} spans "
                     f"0x{block_start:X}-0x{block_end:X}, outside valid AB region "
@@ -1033,6 +1022,35 @@ class OemUnpacker:
         
         # Ensure self.headers is sorted by offset for consistent processing.
         all_headers_sorted: List[Dict] = sorted(self.headers, key=lambda x: x['offset'])
+
+        # Conflict Resolution: Check for Standard blocks overlapping with subsequent blocks.
+        # If a Standard block's required tail alignment (0x1000) encroaches on the next block,
+        # downgrade it to REUSED.
+        for i in range(len(all_headers_sorted) - 1):
+            curr_blk = all_headers_sorted[i]
+            next_blk = all_headers_sorted[i+1]
+
+            if curr_blk.get('classification') == 'STANDARD':
+                # Calculate the theoretical end of this block if it remains STANDARD.
+                # Standard blocks consume 512 bytes of header + payload + padding to next 0x1000.
+                # Note: We must use the specific Standard header size (512) for this calc.
+                payload_end = curr_blk['offset'] + 512 + curr_blk['len']
+                align = 0x1000
+                expected_end = (payload_end + (align - 1)) & ~(align - 1)
+
+                # If the next block starts BEFORE the current block's aligned end, we have a conflict.
+                if next_blk['offset'] < expected_end:
+                    self._warn(
+                        f"Conflict detected: Standard Block ID {curr_blk['id']} Sub {curr_blk['sub_id']} "
+                        f"(Expected End 0x{expected_end:X}) overlaps Next Block at 0x{next_blk['offset']:X}. "
+                        "Downgrading current block to REUSED."
+                    )
+                    # Downgrade logic
+                    curr_blk['classification'] = "REUSED"
+                    # Revert header size to compact 64 bytes.
+                    # The bytes from 64-512 (which were 0x00) will effectively become 
+                    # gap padding between this block and the next, which is correct.
+                    curr_blk['header_size'] = 64
         
         processed_headers: List[Dict] = []
         for h in all_headers_sorted:
@@ -1437,7 +1455,6 @@ class OemUnpacker:
             self._record_block_tail_padding(block_info)
             ab_warning: Optional[str] = self._check_ab_region_bounds(block_info)
             if ab_warning:
-                block_info['ab_region_warning'] = ab_warning
                 if not self.dry_run:
                     self._warn(ab_warning)
 
