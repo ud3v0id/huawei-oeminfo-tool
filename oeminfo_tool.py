@@ -302,10 +302,10 @@ class OemUnpacker:
         header_info['header_padding_byte'] = current_pad if current_pad is not None else 0x00
 
         offset = header_info['offset']
-        if offset % 0x1000 != 0:
-            return
+        # Note: We no longer return early if offset % 0x1000 != 0.
+        # We check for valid standard padding structure first.
 
-        # Try to validate STANDARD layout.
+        # Try to validate STANDARD layout (512-byte header with clean padding).
         # If we have a specific pad byte, we must match it.
         # If we don't (None), we try 0xFF (standard default).
         test_pad = current_pad if current_pad is not None else 0xFF
@@ -316,8 +316,14 @@ class OemUnpacker:
             return
         if not self._region_matches_padding(offset + 64, 448, test_pad):
             return
+        
+        # If we reach here, the 512-byte header structure is valid.
+        # Now determine classification based on alignment.
+        if offset % 0x1000 == 0:
+            header_info['classification'] = "STANDARD"
+        else:
+            header_info['classification'] = "STANDARD_COMPACT"
 
-        header_info['classification'] = "STANDARD"
         header_info['header_size'] = 512
         header_info['header_padding_byte'] = test_pad
     
