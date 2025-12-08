@@ -491,67 +491,58 @@ class OemUnpacker:
     def _finalize_layout_metadata(self) -> None:
         """
         Computes padding metadata and prepares a combined list of data/padding entries.
+        This version correctly handles blocks outside the nominal AB regions.
         """
         if self._layout_finalized:
             return
         self._info("Step 4: Scanning padding and finalizing layout...")
 
+        # Ensure all discovered blocks are sorted by their offset.
         blocks: List[Dict] = sorted(self.manifest['blocks'], key=lambda x: x['offset'])
         layout_entries: List[Dict] = []
         padding_count: int = 0
 
         cursor: int = 0
         for idx, block in enumerate(blocks):
+            # If there's a gap between the current cursor and the start of the next block,
+            # insert a padding entry.
             if block['offset'] > cursor:
-                context: str = "Prefix padding" if idx == 0 else (
-                    f"Padding before ID {block['id']} Sub {block['sub_id']}"
-                )
+                context: str = f"Padding before Block ID {block['id']} Sub {block['sub_id']} " \
+                               f"(0x{cursor:X} to 0x{block['offset']:X})"
                 gap_entry: Optional[Dict] = self._build_padding_entry(cursor, block['offset'] - cursor, context)
                 if gap_entry:
                     layout_entries.append(gap_entry)
                     padding_count += 1
-                cursor = block['offset']
+                cursor = block['offset'] # Move cursor to the start of the current block
             elif block['offset'] < cursor:
+                # This should ideally not happen if blocks are sorted and validated,
+                # but adding a warning for robustness.
                 self._warn(
                     f"Block ID {block['id']} Sub {block['sub_id']} overlaps previous region "
-                    f"(cursor 0x{cursor:X} > offset 0x{block['offset']:X})."
+                    f"(cursor 0x{cursor:X} > offset 0x{block['offset']:X}). This may indicate a malformed image."
                 )
-
+                # Adjust cursor to current block's start to proceed, avoiding infinite loop.
+                cursor = block['offset']
+            
+            # Add the current data block to the layout entries.
             layout_entries.append(block)
+            
+            # Calculate the logical end of the current block, including its payload and any tail padding.
             payload_end, tail_len, _ = self._compute_tail_region(block)
-            cursor = payload_end + tail_len
+            cursor = payload_end + tail_len # Update cursor to after this block's logical end.
 
-        # Padding from last block (or start of file) up to TOTAL_REGION_SIZE.
-        ab_limit: int = min(self.file_size, TOTAL_REGION_SIZE)
-        if cursor < ab_limit:
-            suffix_entry: Optional[Dict] = self._build_padding_entry(
-                cursor,
-                ab_limit - cursor,
-                "Padding up to TOTAL_REGION_SIZE"
-            )
-            if not suffix_entry:
-                suffix_entry = {"type": "PADDING", "offset": cursor, "_length": ab_limit - cursor}
-            layout_entries.append(suffix_entry)
-            padding_count += 1
-            cursor = ab_limit
-
-        # Tail beyond TOTAL_REGION_SIZE if the file contains extra bytes.
-        if self.file_size > TOTAL_REGION_SIZE:
-            tail_len: int = self.file_size - TOTAL_REGION_SIZE
-            tail_entry: Optional[Dict] = self._build_padding_entry(
-                TOTAL_REGION_SIZE,
-                tail_len,
-                "Padding beyond TOTAL_REGION_SIZE"
-            )
-            if not tail_entry:
-                tail_entry = {"type": "PADDING", "offset": TOTAL_REGION_SIZE, "_length": tail_len}
-            layout_entries.append(tail_entry)
-            padding_count += 1
-            cursor = TOTAL_REGION_SIZE + tail_len
-
+        # After processing all blocks, if there's any remaining space from the last block's end
+        # to the file's actual size, fill it with padding.
+        if cursor < self.file_size:
+            context: str = f"File tail padding (0x{cursor:X} to 0x{self.file_size:X})"
+            tail_entry: Optional[Dict] = self._build_padding_entry(cursor, self.file_size - cursor, context)
+            if tail_entry:
+                layout_entries.append(tail_entry)
+                padding_count += 1
+        
         self._layout_entries = layout_entries
         self._layout_finalized = True
-        self._debug(f"Recorded {padding_count} padding entries")
+        self._debug(f"Recorded {padding_count} padding entries and {len(layout_entries) - padding_count} data blocks.")
 
 
     def __enter__(self) -> "OemUnpacker":
