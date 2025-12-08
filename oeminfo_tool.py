@@ -1043,14 +1043,11 @@ class OemUnpacker:
                     self._warn(
                         f"Conflict detected: Standard Block ID {curr_blk['id']} Sub {curr_blk['sub_id']} "
                         f"(Expected End 0x{expected_end:X}) overlaps Next Block at 0x{next_blk['offset']:X}. "
-                        "Downgrading current block to REUSED."
+                        "Converting current block to STANDARD_COMPACT (preserving 512-byte header but relaxing tail alignment)."
                     )
-                    # Downgrade logic
-                    curr_blk['classification'] = "REUSED"
-                    # Revert header size to compact 64 bytes.
-                    # The bytes from 64-512 (which were 0x00) will effectively become 
-                    # gap padding between this block and the next, which is correct.
-                    curr_blk['header_size'] = 64
+                    # Resolve conflict by relaxing alignment requirement
+                    curr_blk['classification'] = "STANDARD_COMPACT"
+                    # Do NOT change header_size; it must remain 512 to correctly locate payload.
         
         processed_headers: List[Dict] = []
         for h in all_headers_sorted:
@@ -1712,11 +1709,14 @@ class OemPacker:
             layout_upper: str = layout.upper()
             entry["layout"] = layout_upper
             entry["classification"] = layout_upper
-            entry["header_size"] = 512 if layout_upper == "STANDARD" else 64
+            
+            is_std_variant = (layout_upper == "STANDARD" or layout_upper == "STANDARD_COMPACT")
+            entry["header_size"] = 512 if is_std_variant else 64
+            
             if "header_padding_byte" not in entry:
-                entry["header_padding_byte"] = 0xFF if layout_upper == "STANDARD" else 0x00
+                entry["header_padding_byte"] = 0xFF if is_std_variant else 0x00
             if "block_padding_byte" not in entry:
-                entry["block_padding_byte"] = 0xFF if layout_upper == "STANDARD" else 0x00
+                entry["block_padding_byte"] = 0xFF if is_std_variant else 0x00
             loaded_entries.append(entry)
         self._assign_padding_lengths(loaded_entries, file_size)
         self._assign_active_status(loaded_entries)
