@@ -1902,7 +1902,7 @@ class OemPacker:
         """
         Reconstructs a single OEMINFO data block based on manifest metadata and extracted files.
         """
-        block_type: str = block_info['type']
+        block_type: str = str(block_info['type'])
         base_name: str = self._build_filename_base(block_info)
         content_data: bytes = b""
 
@@ -1918,20 +1918,26 @@ class OemPacker:
                 reconstructed += f"{len(part_data)}".encode('ascii') + b'\x00' + part_data
             content_data = reconstructed
         elif block_type.startswith("IMAGE"):
-            custom_meta: Dict = dict(block_info.get("custom_meta", {}) or {})
+            custom_meta: Optional[Dict] = block_info.get("custom_meta")
             if not custom_meta:
                 raise ValueError(f"Image block ID {block_info['id']} Sub {block_info['sub_id']} missing custom_meta.")
             
-            # JSON loads 'ver' as a HEX string. Decode back to bytes.
-            ver_hex: str = custom_meta.get("ver", "")
-            if ver_hex.startswith("0x"):
-                ver_hex = ver_hex[2:] # Strip "0x" prefix for bytes.fromhex
-            try:
-                ver_bytes: bytes = bytes.fromhex(ver_hex).ljust(12, b'\x00')
-            except ValueError:
-                # Fallback if user provided non-hex string manually or invalid hex
-                self._warn(f"Invalid HEX string for Image Version ('{ver_hex}'). Falling back to ASCII (ignoring errors).")
-                ver_bytes = ver_hex.encode('ascii', errors='ignore').ljust(12, b'\x00')
+            # Handle 'ver' field: it could be an integer (from hex string in JSON) or a raw ASCII string.
+            ver_val = custom_meta.get("ver", "")
+            ver_bytes: bytes
+
+            if isinstance(ver_val, int):
+                try:
+                    # Convert integer back to bytes (Big Endian to match hex representation)
+                    ver_bytes = ver_val.to_bytes(12, byteorder='big')
+                except OverflowError:
+                    raise ValueError(f"Image Version value {ver_val} exceeds 12 bytes.")
+            else:
+                ver_str = str(ver_val)
+                encoded_ver = ver_str.encode('ascii', errors='ignore')
+                if len(encoded_ver) > 12:
+                    self._warn(f"Image Version string '{ver_str}' exceeds 12 bytes and will be truncated.")
+                ver_bytes = encoded_ver[:12].ljust(12, b'\x00')
 
             if block_type == "IMAGE_GZIP":
                 gz_rel: str = f"{base_name}.gz"
@@ -1940,7 +1946,6 @@ class OemPacker:
                 rel_path: str = f"{base_name}.bmp"
                 image_payload = self._read_content_file(rel_path)
 
-            block_info['custom_meta'] = custom_meta
             start_offset: int = 0x1A
             rand_adjust: Optional[int] = custom_meta.get('rand_adjust')
             if rand_adjust is None:
