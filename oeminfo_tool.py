@@ -1992,10 +1992,10 @@ class OemPacker:
             raise ValueError(f"Unsupported block type for packing: {block_type}")
 
         actual_payload_len: int = len(content_data)
+        recorded_payload_len: int = block_info.get('len', 0)
         block_info['len'] = actual_payload_len
 
         header_size: int = block_info.get('header_size', 64)
-        recorded_payload_len: int = block_info.get('len', 0)
         next_data_offset: int = block_info.get('_next_data_offset', block_info['offset'])
         max_total: int = max(0, next_data_offset - block_info['offset'])
         available_payload_space: int = max(0, max_total - header_size)
