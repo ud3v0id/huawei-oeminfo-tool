@@ -28,7 +28,7 @@ REGION_SIZE = 0x2000000  # 32MB
 # Total size of combined A and B regions.
 TOTAL_REGION_SIZE = REGION_SIZE * 2
 # Version number of the tool.
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 # Default padding byte used whenever actual padding contents are unknown or mixed.
 DEFAULT_PADDING_BYTE = 0x00
 
