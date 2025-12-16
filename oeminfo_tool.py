@@ -1923,7 +1923,7 @@ class OemPacker:
                 raise ValueError(f"Image block ID {block_info['id']} Sub {block_info['sub_id']} missing custom_meta.")
             
             # Handle 'ver' field: it could be an integer (from hex string in JSON) or a raw ASCII string.
-            ver_val = custom_meta.get("ver", "")
+            ver_val: Union[int, str] = custom_meta.get("ver", "")
             ver_bytes: bytes
 
             if isinstance(ver_val, int):
@@ -1934,7 +1934,7 @@ class OemPacker:
                     raise ValueError(f"Image Version value {ver_val} exceeds 12 bytes.")
             else:
                 ver_str = str(ver_val)
-                encoded_ver = ver_str.encode('ascii', errors='ignore')
+                encoded_ver: bytes = ver_str.encode('ascii', errors='ignore')
                 if len(encoded_ver) > 12:
                     self._warn(f"Image Version string '{ver_str}' exceeds 12 bytes and will be truncated.")
                 ver_bytes = encoded_ver[:12].ljust(12, b'\x00')
